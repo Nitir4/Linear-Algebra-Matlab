@@ -9,4 +9,7 @@
 
 
      ImageCompressionGUI - GUI implementation of the ImageCompressionApp_mech505 while not a full blown .mlapp it does some of the GUI in .m file
+
+
+     ImageCompressionAPP - A full blown application made using MATLAB's app designer. (.mlapp) {the work on this remains to be in progress)
         
