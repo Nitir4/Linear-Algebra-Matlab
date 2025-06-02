@@ -1,7 +1,6 @@
 function ImageCompressionApp3_GUI_popup_compare()
-% PCA/SVD image compression GUI, now with pop-up windows for all results
-% (compare, compress, analyze), and main UI always stays the same.
-% Compare now correctly shows: original, reconstructed PCA, reconstructed SVD.
+% PCA/SVD image compression GUI, with pop-up windows for all results
+% (compare, compress, analyze), and main UI always stays the same as in terminal.
 % Compress with PCA also displays the compressed (projected) image.
 
     fig = uifigure('Name', 'Image Compression App', 'Position', [100 100 950 700]);
@@ -12,7 +11,7 @@ function ImageCompressionApp3_GUI_popup_compare()
     appdata.origData = [];
     appdata.lastCompImage = []; % For saving
 
-    % Where only the loaded image is shown in the main window
+    % Only the loaded image is shown in the main window
     ax = uiaxes(fig, 'Position', [330 340 600 340]);
     ax.Visible = 'on'; % Only used for preview
 
