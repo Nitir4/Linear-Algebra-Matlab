@@ -1,4 +1,4 @@
-function ImageCompressionApp3_GUI_popup_compare()
+function ImageCompressionApp_mech505_GUI()
 % PCA/SVD image compression GUI, with pop-up windows for all results
 % (compare, compress, analyze), and main UI always stays the same as in terminal.
 % Compress with PCA also displays the compressed (projected) image.
