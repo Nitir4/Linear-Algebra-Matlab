@@ -1,485 +1,387 @@
-% Denoising numerical matrices or images with PCA & SVD, metrics-vs-k.
-% Greyscale/RGB for demo data only. User-provided CSV data is always treated as a matrix.
-% After denoising a CSV ("Text (matrix)"), display the original, noisy, PCA, and SVD denoised matrices.
-% For large data, ask the user before compressing to k=50.
+function NoiseFilteringApp2()
+    % PCA/SVD metrics vs k using customPCA and customSVD for both text and images
+    % Features:
+    % - Greyscale/RGB modes for both text and image
+    % - User can input k or do full k sweep (metrics-vs-k)
+    % - MSE/SSIM/PSNR (images), MSE only (text)
+    % - No image display for textual mode, only metrics/plots
+    % - No resizing unless user confirms (for large images)
+    % - Progress feedback
+    % - Computation time vs k
+    % - "Optimum k" (first k beating noisy reference) detection and marking
+    % - Efficient: SVD/PCA computed once per channel
 
-function NoiseFilteringApp5()
     clc;
-    disp('--- Noise filtering with PCA & SVD ---');
+    disp('PCA/SVD metrics-vs-k using customPCA and customSVD (optimized, all features)');
 
-    % Ask data type and source
-    modeType = menu('What do you want to denoise?','Text (matrix) / CSV','Image');
-    useDemo = questdlg('Use demo data?','Source','Yes','No','Yes');
-    useDemo = strcmp(useDemo,'Yes');
+    datatype = menu('Data Type','Textual Data','Image Data');
+    use_mock = questdlg('Use mock data?','Data Source','Yes','No','Yes');
+    use_mock = strcmp(use_mock,'Yes');
 
-    % Choose noise type
-    noiseType = menu('Noise type?','Impulse noise (random spikes)','Gaussian white noise');
-
-    if modeType == 1
-        % --------- TEXT DATA (matrix) ---------
-        if useDemo
-            txtType = menu('Text: Grey or RGB?','Greyscale','RGB');
-            if txtType == 1
-                clean = makeDemoMat(100,50,10,0.1)*10 + 128;
-                isRGB = false;
-            else
-                clean = zeros(100,50,3);
-                for c=1:3
-                    clean(:,:,c) = makeDemoMat(100,50,10,0.1)*10 + 128;
+    % --- Textual Data ---
+    if datatype==1
+        mock_mode = menu('Mock textual data mode?','Greyscale','RGB');
+        if use_mock
+            if mock_mode == 1 % Greyscale
+                X_true = uint8(make_low_rank_matrix_matlab(100, 50, 10, 0.1) * 10 + 128);
+                is_rgb = false;
+            else % RGB
+                X_true = zeros(100,50,3,'uint8');
+                for cc = 1:3
+                    X_true(:,:,cc) = uint8(make_low_rank_matrix_matlab(100, 50, 10, 0.1) * 10 + 128);
                 end
-                isRGB = true;
+                is_rgb = true;
             end
         else
-            [f, p] = uigetfile('*.csv');
-            if isequal(f,0)
-                disp('No file picked. Bye!');
+            [file, path] = uigetfile('*.csv');
+            if isequal(file,0)
+                disp('No file selected. Exiting.');
                 return;
             end
-            clean = readmatrix(fullfile(p,f));
-            isRGB = false;
+            X_true = uint8(readmatrix(fullfile(path, file)));
+            is_rgb = false; % CSV is 2D
         end
+        sz = size(X_true);
+        X_noisy = X_true + uint8(10*randn(sz));
+        mask = rand(sz) < 0.01;
+        tmp = X_noisy(mask) + uint8(50.*(2*(rand(nnz(mask),1)>0.5)-1));
+        tmp(tmp > 255) = 255; tmp(tmp < 0) = 0;
+        X_noisy(mask) = tmp;
+        [m, n, ~] = size(X_true);
+        kmax = min(m, n);
 
-        sz = size(clean);
+        prompt = sprintf('Enter k (1-%d) (leave empty for metrics-vs-k/optimum analysis): ', kmax);
+        user_k = input(prompt);
 
-        switch noiseType
-            case 1 % Impulse
-                noisy = clean + randn(sz)*10;
-                mask = rand(sz)<0.01;
-                tmp = noisy(mask) + 50.*(2*(rand(nnz(mask),1)>0.5)-1);
-                noisy(mask) = tmp;
-            case 2 % Gaussian
-                noisy = clean + randn(sz)*20;
-        end
-
-        [m, n, ~] = size(clean);
-        kmax = min(m,n);
-
-        % Optionally compress large data
-        if max(m,n) > 100
-            compressAns = questdlg(sprintf('Data is %dx%d. Compress to k=50 for speed?', m, n), ...
-                'Compress?', 'Yes', 'No', 'Yes');
-            if strcmp(compressAns, 'Yes')
-                kmax = min(kmax, 50);
-            end
-        end
-
-        userk = input(sprintf('Pick k (1-%d) or leave blank for sweep: ',kmax));
-        [bestPCA, bestSVD, noisyMat, origMat] = runMatrixDenoiseCurves(noisy, clean, kmax, userk);
-
-        % Show the original, noisy, PCA, and SVD matrices
-        fprintf('\n--- Matrix Denoising Results ---\n');
-        disp('Original matrix:');
-        disp(origMat);
-        disp('Noisy matrix:');
-        disp(noisyMat);
-        disp('Denoised (PCA):');
-        disp(bestPCA);
-        disp('Denoised (SVD):');
-        disp(bestSVD);
-        return
-    else
-        % --------- IMAGE DATA ---------
-        isRGB = menu('Image type?','RGB','Greyscale') == 1;
-        if useDemo
-            img = imread('peppers.png');
-        else
-            [f,p] = uigetfile({'*.png;*.jpg;*.jpeg;*.bmp;*.tif','Images'});
-            if isequal(f,0)
-                disp('No img. Bye!');
-                return;
-            end
-            img = imread(fullfile(p,f));
-        end
-        if ~isRGB && ndims(img)==3
-            img = rgb2gray(img);
-        elseif isRGB && ndims(img)==2
-            img = repmat(img,1,1,3);
-        end
-        [m,n,~] = size(img); kmax = min(m,n);
-
-        % Optionally compress large data
-        if max(m,n)>128
-            compressAns = questdlg(sprintf('Img is %dx%d. Compress to 128x128 for speed?',m,n),'Compress?','Yes','No','Yes');
-            if strcmp(compressAns,'Yes')
-                img = imresize(img,[128 128]);
-                [m,n,~] = size(img); kmax = min(m,n);
-            end
-        end
-
-        clean = double(img);
-        sz = size(img);
-
-        switch noiseType
-            case 1 % Impulse
-                noisy = double(img) + randn(sz)*10;
-                mask = rand(sz)<0.01;
-                tmp = noisy(mask) + 50.*(2*(rand(nnz(mask),1)>0.5)-1);
-                noisy(mask) = tmp;
-            case 2 % Gaussian
-                noisy = double(img) + randn(sz)*20;
-        end
-
-        userk = input(sprintf('Pick k (1-%d) or blank for sweep: ',kmax));
-        runDenoiseCurves(uint8(noisy), uint8(clean), kmax, isRGB, userk, 'image');
+        analyzeMetricsHybrid(X_noisy, X_true, kmax, is_rgb, user_k, 'text');
         return
     end
-end
 
-function X = makeDemoMat(ns, nf, rank, tail)
-    X = randn(ns,rank)*randn(rank,nf);
-    X = X + tail*randn(ns,nf);
-end
+    % --- Image Data ---
+    is_rgb = true; % default
+    mode = menu('Image Mode?','RGB','Greyscale');
+    is_rgb = (mode==1);
 
-function [bestPCA, bestSVD, noisyMat, origMat] = runMatrixDenoiseCurves(noisy, clean, kmax, userk)
-    [m, n, C] = size(clean);
-    origMat = clean;
-    noisyMat = noisy;
-
-    if isempty(userk)
-        ks = 1:kmax;
-        msePCA = zeros(size(ks));
-        mseSVD = zeros(size(ks));
-        % SVD decomp
-        [U,S,V] = svd(noisy, 'econ');
-        % PCA decomp
-        m1 = mean(noisy,1);
-        cent = noisy - m1;
-        covM = cov(cent);
-        [E,ev] = eig(covM);
-        [~,idx]=sort(diag(ev),'descend');
-        E=E(:,idx);
-
-        bestPCA = [];
-        bestSVD = [];
-        bestPCA_k = [];
-        bestSVD_k = [];
-        bestPCA_mse = inf;
-        bestSVD_mse = inf;
-
-        for i=1:length(ks)
-            k = ks(i);
-            % SVD
-            reconSVD = U(:,1:k)*S(1:k,1:k)*V(:,1:k)';
-            mseSVD(i) = mean((clean(:)-reconSVD(:)).^2);
-
-            % PCA
-            Ek = E(:,1:min(k,size(E,2)));
-            proj = cent*Ek;
-            reconPCA = proj*Ek'+m1;
-            msePCA(i) = mean((clean(:)-reconPCA(:)).^2);
-
-            % Track best (lowest MSE)
-            if msePCA(i) < bestPCA_mse
-                bestPCA_mse = msePCA(i);
-                bestPCA = reconPCA;
-                bestPCA_k = k;
-            end
-            if mseSVD(i) < bestSVD_mse
-                bestSVD_mse = mseSVD(i);
-                bestSVD = reconSVD;
-                bestSVD_k = k;
-            end
-        end
-
-        % Plot MSE vs k
-        figure('Name','Matrix mode: MSE vs k','Units','normalized','Position',[.1 .3 .6 .4]);
-        plot(ks, msePCA, 'b-', ks, mseSVD, 'r-', 'LineWidth', 2); grid on; hold on;
-        legend('PCA','SVD','Location','northeast');
-        xlabel('k'); ylabel('MSE'); title('Matrix Denoising: MSE vs k');
-        yline(mean((clean(:)-noisy(:)).^2),'k--','Noisy','LineWidth',1.5);
-        plot(bestPCA_k, bestPCA_mse, 'bo', 'MarkerSize', 10, 'LineWidth', 2);
-        plot(bestSVD_k, bestSVD_mse, 'ro', 'MarkerSize', 10, 'LineWidth', 2);
-        hold off;
-
-        bestPCA = round(bestPCA,4);
-        bestSVD = round(bestSVD,4);
-        noisyMat = round(noisyMat,4);
-        origMat = round(origMat,4);
-
+    if use_mock
+        img = imread('peppers.png'); % NO RESIZE unless too big
     else
-        k = userk;
-        if k<1||k>kmax, error('k out of range'); end
-        [U,S,V] = svd(noisy, 'econ');
-        reconSVD = U(:,1:k)*S(1:k,1:k)*V(:,1:k)';
-        m1 = mean(noisy,1);
-        cent = noisy - m1;
-        covM = cov(cent);
-        [E,ev] = eig(covM);
-        [~,idx]=sort(diag(ev),'descend');
-        E=E(:,idx);
-        Ek = E(:,1:min(k,size(E,2)));
-        proj = cent*Ek;
-        reconPCA = proj*Ek'+m1;
-
-        bestPCA = round(reconPCA,4);
-        bestSVD = round(reconSVD,4);
-        noisyMat = round(noisy,4);
-        origMat = round(clean,4);
-
-        fprintf('k=%d\n',k);
-        fprintf('Noisy: MSE=%.4g\n',mean((clean(:)-noisy(:)).^2));
-        fprintf(' PCA : MSE=%.4g\n',mean((clean(:)-reconPCA(:)).^2));
-        fprintf(' SVD : MSE=%.4g\n',mean((clean(:)-reconSVD(:)).^2));
+        [file, path] = uigetfile({'*.png;*.jpg;*.jpeg;*.bmp;*.tif','Image files'});
+        if isequal(file,0)
+            disp('No file selected. Exiting.');
+            return;
+        end
+        img = imread(fullfile(path,file)); % NO RESIZE unless too big
     end
+
+    % Greyscale/RGB selection
+    if ~is_rgb && ndims(img)==3
+        img = rgb2gray(img);
+    elseif is_rgb && ndims(img)==2
+        img = repmat(img,1,1,3);
+    end
+
+    % Resize if large
+    [m, n, ~] = size(img);
+    kmax = min(m,n);
+    max_dim = 128; % You can tighten this for speed
+    if max(m,n) > max_dim
+        resp = questdlg(sprintf('Image is large (%dx%d). Resize to %dx%d for faster computation?',m,n,max_dim,max_dim),'Resize?','Yes','No','Yes');
+        if strcmp(resp,'Yes')
+            img = imresize(img, [max_dim max_dim]);
+            [m, n, ~] = size(img); kmax = min(m,n);
+        end
+    end
+
+    img_orig = img;
+    sz = size(img);
+    img_noisy = img + uint8(randn(sz)*10);
+    mask = rand(sz) < 0.01;
+    tmp = img_noisy(mask) + uint8(50.*(2*(rand(nnz(mask),1)>0.5)-1));
+    tmp(tmp > 255) = 255; tmp(tmp < 0) = 0;
+    img_noisy(mask) = tmp;
+
+    prompt = sprintf('Enter k (1-%d) (leave empty for metrics-vs-k/optimum analysis): ', kmax);
+    user_k = input(prompt);
+
+    analyzeMetricsHybrid(img_noisy, img_orig, kmax, is_rgb, user_k, 'image');
 end
 
-function runDenoiseCurves(noisy, clean, kmax, isRGB, userk, dtype)
-    % This is the original image denoising function from your prior code.
-    if nargin<4, isRGB=false; end
-    if nargin<5, userk=[]; end
-    if nargin<6, dtype='image'; end
+function X = make_low_rank_matrix_matlab(n_samples, n_features, effective_rank, tail_strength)
+    A = randn(n_samples, effective_rank);
+    B = randn(effective_rank, n_features);
+    X = A * B;
+    X = X + tail_strength*randn(n_samples, n_features);
+end
 
-    if ndims(noisy)==3, C=size(noisy,3); else, C=1; end
-    refMSE = mseMetric(clean,noisy);
+function analyzeMetricsHybrid(noisy, orig, kmax, isRGB, user_k, datatype)
+    if nargin < 4, isRGB = false; end
+    if nargin < 5, user_k = []; end
+    if nargin < 6, datatype = 'image'; end
+    if ndims(noisy)==3
+        c = size(noisy,3);
+    else
+        c = 1;
+    end
+    m = size(noisy,1); n = size(noisy,2);
 
-    if strcmp(dtype,'image')
-        refPSNR = psnrMetric(clean,noisy);
-        refSSIM = ssimMetric(clean,noisy,isRGB);
+    % Calculate reference errors (due to noise)
+    ref_mse = mseMetric(orig, noisy);
+
+    if strcmp(datatype,'image')
+        ref_psnr = psnrMetric(orig, noisy);
+        ref_ssim = ssimMetric(orig, noisy, isRGB);
     end
 
-    if isempty(userk)
-        ks = 1:kmax;
-        msePCA = zeros(size(ks));
-        mseSVD = zeros(size(ks));
-        tPCA = zeros(size(ks));
-        tSVD = zeros(size(ks));
-        if strcmp(dtype,'image')
-            psnrPCA = zeros(size(ks));
-            psnrSVD = zeros(size(ks));
-            ssimPCA = zeros(size(ks));
-            ssimSVD = zeros(size(ks));
+    if isempty(user_k)
+        kValues = 1:kmax;
+        mse_pca = zeros(size(kValues));
+        mse_svd = zeros(size(kValues));
+        t_pca = zeros(size(kValues));
+        t_svd = zeros(size(kValues));
+        if strcmp(datatype,'image')
+            psnr_pca = zeros(size(kValues));
+            psnr_svd = zeros(size(kValues));
+            ssim_pca = zeros(size(kValues));
+            ssim_svd = zeros(size(kValues));
         end
 
-        % SVD decomp once per channel
-        Uc=cell(1,C); Sc=cell(1,C); Vc=cell(1,C);
-        for c=1:C
-            if C==1 && ndims(noisy)==2
+        % Compute full decomposition ONCE for each channel
+        % --- SVD ---
+        Uall = cell(1,c); Sall = cell(1,c); Vall = cell(1,c);
+        for cc = 1:c
+            if c==1 && ndims(noisy)==2
                 chan = double(noisy);
             else
-                chan = double(noisy(:,:,c));
+                chan = double(noisy(:,:,cc));
             end
-            [U,S,V] = mySVD(chan);
-            Uc{c}=U; Sc{c}=S; Vc{c}=V;
+            [U,S,V] = customSVD_full(chan);
+            Uall{cc} = U; Sall{cc} = S; Vall{cc} = V;
         end
-        % PCA decomp once per channel
-        Mc=cell(1,C); Ec=cell(1,C);
-        for c=1:C
-            if C==1 && ndims(noisy)==2
+
+        % --- PCA ---
+        MeanCols = cell(1,c); EigVecs = cell(1,c); EigVals = cell(1,c);
+        for cc = 1:c
+            if c==1 && ndims(noisy)==2
                 chan = double(noisy);
             else
-                chan = double(noisy(:,:,c));
+                chan = double(noisy(:,:,cc));
             end
-            m1 = mean(chan,1);
-            cent = chan-m1;
-            covM = cov(cent);
-            [E,ev] = eig(covM);
-            [~,idx]=sort(diag(ev),'descend');
-            E=E(:,idx);
-            Mc{c}=m1; Ec{c}=E;
+            meanCols = mean(chan, 1);
+            centered = chan - meanCols;
+            covMatrix = cov(centered);
+            [eigvecs, eigvals] = eig(covMatrix);
+            [eigvals, idx] = sort(diag(eigvals), 'descend');
+            eigvecs = eigvecs(:, idx);
+            MeanCols{cc} = meanCols;
+            EigVecs{cc} = eigvecs;
+            EigVals{cc} = eigvals;
         end
 
-        for i=1:length(ks)
-            k=ks(i);
+        % --- Sweep k ---
+        for i = 1:length(kValues)
+            k = kValues(i);
 
-            % SVD
+            % SVD reconstruct
             tic;
-            if C==1
-                recon = Uc{1}(:,1:k)*Sc{1}(1:k,1:k)*Vc{1}(:,1:k)';
-                recon = min(max(recon,0),255);
+            if c == 1
+                recon = Uall{1}(:,1:k) * Sall{1}(1:k,1:k) * Vall{1}(:,1:k)';
+                recon = max(min(recon,255),0);
                 svdRecon = uint8(recon);
             else
                 svdRecon = zeros(size(noisy),'double');
-                for c=1:C
-                    recon = Uc{c}(:,1:k)*Sc{c}(1:k,1:k)*Vc{c}(:,1:k)';
-                    recon = min(max(recon,0),255);
-                    svdRecon(:,:,c) = recon;
+                for cc = 1:c
+                    recon = Uall{cc}(:,1:k) * Sall{cc}(1:k,1:k) * Vall{cc}(:,1:k)';
+                    recon = max(min(recon,255),0);
+                    svdRecon(:,:,cc) = recon;
                 end
-                svdRecon=uint8(svdRecon);
+                svdRecon = uint8(svdRecon);
             end
-            tSVD(i) = toc;
+            t_svd(i) = toc;
 
-            % PCA
+            % PCA reconstruct
             tic;
-            if C==1
-                Ek = Ec{1}(:,1:min(k,size(Ec{1},2)));
-                proj = (double(noisy)-Mc{1})*Ek;
-                recon = proj*Ek' + Mc{1};
-                recon = min(max(recon,0),255);
+            if c == 1
+                V_k = EigVecs{1}(:,1:min(k,size(EigVecs{1},2)));
+                proj = (double(noisy)-MeanCols{1}) * V_k;
+                recon = proj * V_k' + MeanCols{1};
+                recon = max(min(recon,255),0);
                 pcaRecon = uint8(recon);
             else
                 pcaRecon = zeros(size(noisy),'double');
-                for c=1:C
-                    Ek = Ec{c}(:,1:min(k,size(Ec{c},2)));
-                    proj = (double(noisy(:,:,c))-Mc{c})*Ek;
-                    recon = proj*Ek' + Mc{c};
-                    recon = min(max(recon,0),255);
-                    pcaRecon(:,:,c) = recon;
+                for cc = 1:c
+                    V_k = EigVecs{cc}(:,1:min(k,size(EigVecs{cc},2)));
+                    proj = (double(noisy(:,:,cc))-MeanCols{cc}) * V_k;
+                    recon = proj * V_k' + MeanCols{cc};
+                    recon = max(min(recon,255),0);
+                    pcaRecon(:,:,cc) = recon;
                 end
-                pcaRecon=uint8(pcaRecon);
+                pcaRecon = uint8(pcaRecon);
             end
-            tPCA(i) = toc;
+            t_pca(i) = toc;
 
-            msePCA(i) = mseMetric(clean,pcaRecon);
-            mseSVD(i) = mseMetric(clean,svdRecon);
+            mse_pca(i) = mseMetric(orig, pcaRecon);
+            mse_svd(i) = mseMetric(orig, svdRecon);
 
-            if strcmp(dtype,'image')
-                psnrPCA(i) = psnrMetric(clean,pcaRecon);
-                psnrSVD(i) = psnrMetric(clean,svdRecon);
-                ssimPCA(i) = ssimMetric(clean,pcaRecon,isRGB);
-                ssimSVD(i) = ssimMetric(clean,svdRecon,isRGB);
+            if strcmp(datatype,'image')
+                psnr_pca(i) = psnrMetric(orig, pcaRecon);
+                psnr_svd(i) = psnrMetric(orig, svdRecon);
+                ssim_pca(i) = ssimMetric(orig, pcaRecon, isRGB);
+                ssim_svd(i) = ssimMetric(orig, svdRecon, isRGB);
             end
 
-            if mod(i,10)==0 || i==1 || i==length(ks)
-                fprintf('k=%d/%d done\n',k,kmax);
-            end
-        end
-
-        % Optimum k (first k beating noisy reference)
-        optimumPCA_k = find(msePCA < refMSE, 1, 'first');
-        optimumSVD_k = find(mseSVD < refMSE, 1, 'first');
-        if strcmp(dtype,'image')
-            optimumPCA_k_ssim = find(ssimPCA > refSSIM, 1, 'first');
-            optimumSVD_k_ssim = find(ssimSVD > refSSIM, 1, 'first');
-        end
-
-        % Best k (max SSIM)
-        if strcmp(dtype,'image')
-            [~,bestPCA_k]=max(ssimPCA);
-            [~,bestSVD_k]=max(ssimSVD);
-        end
-
-        % ---- All metrics in one 2x2 figure ----
-        figure('Name','All metrics vs k','Units','normalized','Position',[.1 .2 .7 .6]);
-        subplot(2,2,1);
-        plot(ks,msePCA,'b-',ks,mseSVD,'r-','LineWidth',2); hold on
-        yline(refMSE,'k--','LineWidth',1.5);
-        if strcmp(dtype,'image')
-            plot(ks(bestPCA_k),msePCA(bestPCA_k),'bo','MarkerSize',10,'LineWidth',2);
-            plot(ks(bestSVD_k),mseSVD(bestSVD_k),'ro','MarkerSize',10,'LineWidth',2);
-            if ~isempty(optimumPCA_k), plot(ks(optimumPCA_k), msePCA(optimumPCA_k), 'bd', 'MarkerSize',10, 'LineWidth',2); end
-            if ~isempty(optimumSVD_k), plot(ks(optimumSVD_k), mseSVD(optimumSVD_k), 'rd', 'MarkerSize',10, 'LineWidth',2); end
-            legend('PCA','SVD','Noisy','PCA best','SVD best','PCA opt','SVD opt','Location','northeast'); 
-        else
-            legend('PCA','SVD','Noisy','Location','northeast');
-        end
-        xlabel('k'); ylabel('MSE'); title('MSE vs k'); grid on; hold off
-
-        subplot(2,2,2);
-        plot(ks,tPCA,'b-',ks,tSVD,'r-','LineWidth',2);
-        legend('PCA','SVD'); xlabel('k'); ylabel('Time (s)'); title('Time vs k'); grid on;
-
-        if strcmp(dtype,'image')
-            subplot(2,2,3);
-            plot(ks,psnrPCA,'b-',ks,psnrSVD,'r-','LineWidth',2); hold on
-            yline(refPSNR,'k--','LineWidth',1.5);
-            plot(ks(bestPCA_k),psnrPCA(bestPCA_k),'bo','MarkerSize',10,'LineWidth',2);
-            plot(ks(bestSVD_k),psnrSVD(bestSVD_k),'ro','MarkerSize',10,'LineWidth',2);
-            legend('PCA','SVD','Noisy','PCA best','SVD best','Location','southeast');
-            xlabel('k'); ylabel('PSNR (dB)'); title('PSNR vs k'); grid on; hold off
-
-            subplot(2,2,4);
-            plot(ks,ssimPCA,'b-',ks,ssimSVD,'r-','LineWidth',2); hold on
-            yline(refSSIM,'k--','LineWidth',1.5);
-            plot(ks(bestPCA_k),ssimPCA(bestPCA_k),'bo','MarkerSize',10,'LineWidth',2);
-            plot(ks(bestSVD_k),ssimSVD(bestSVD_k),'ro','MarkerSize',10,'LineWidth',2);
-            if ~isempty(optimumPCA_k_ssim), plot(ks(optimumPCA_k_ssim), ssimPCA(optimumPCA_k_ssim), 'bd', 'MarkerSize',10, 'LineWidth',2); end
-            if ~isempty(optimumSVD_k_ssim), plot(ks(optimumSVD_k_ssim), ssimSVD(optimumSVD_k_ssim), 'rd', 'MarkerSize',10, 'LineWidth',2); end
-            legend('PCA','SVD','Noisy','PCA best','SVD best','PCA opt','SVD opt','Location','southeast');
-            xlabel('k'); ylabel('SSIM'); title('SSIM vs k'); grid on; hold off
-        else
-            subplot(2,2,3); axis off; text(0.1,0.5,'PSNR not for text mode','FontSize',14);
-            subplot(2,2,4); axis off; text(0.1,0.5,'SSIM not for text mode','FontSize',14);
-        end
-
-        % ---- Show best and optimum reconstructions ----
-        if strcmp(dtype,'image')
-            reconPCA_best = getRecon(Uc,Sc,Vc,Mc,Ec,noisy,C,bestPCA_k,'pca');
-            reconSVD_best = getRecon(Uc,Sc,Vc,Mc,Ec,noisy,C,bestSVD_k,'svd');
-            reconPCA_opt = [];
-            reconSVD_opt = [];
-            if exist('optimumPCA_k_ssim','var') && ~isempty(optimumPCA_k_ssim)
-                reconPCA_opt = getRecon(Uc,Sc,Vc,Mc,Ec,noisy,C,optimumPCA_k_ssim,'pca');
-            end
-            if exist('optimumSVD_k_ssim','var') && ~isempty(optimumSVD_k_ssim)
-                reconSVD_opt = getRecon(Uc,Sc,Vc,Mc,Ec,noisy,C,optimumSVD_k_ssim,'svd');
-            end
-            figure('Name','Reconstructed Images','Units','normalized','Position',[.15 .3 .7 .3]);
-            if ndims(clean)==2
-                subplot(1,4,1); imagesc(clean); axis image off; title('Original'); colormap gray;
-                subplot(1,4,2); imagesc(noisy); axis image off; title('Noisy'); colormap gray;
-                subplot(1,4,3); imagesc(reconPCA_best); axis image off; title(sprintf('PCA best (k=%d)',bestPCA_k)); colormap gray;
-                subplot(1,4,4); imagesc(reconSVD_best); axis image off; title(sprintf('SVD best (k=%d)',bestSVD_k)); colormap gray;
-            else
-                subplot(1,4,1); imshow(clean); title('Original');
-                subplot(1,4,2); imshow(noisy); title('Noisy');
-                subplot(1,4,3); imshow(reconPCA_best); title(sprintf('PCA best (k=%d)',bestPCA_k));
-                subplot(1,4,4); imshow(reconSVD_best); title(sprintf('SVD best (k=%d)',bestSVD_k));
-            end
-            % Print both best and optimum
-            if exist('ssimPCA','var')
-                fprintf('Best SSIM for PCA:    k=%d, SSIM=%.4f\n',bestPCA_k,ssimPCA(bestPCA_k));
-                fprintf('Best SSIM for SVD:    k=%d, SSIM=%.4f\n',bestSVD_k,ssimSVD(bestSVD_k));
-                if exist('optimumPCA_k_ssim','var') && ~isempty(optimumPCA_k_ssim)
-                    fprintf('Optimum SSIM for PCA: k=%d, SSIM=%.4f\n',optimumPCA_k_ssim,ssimPCA(optimumPCA_k_ssim));
-                end
-                if exist('optimumSVD_k_ssim','var') && ~isempty(optimumSVD_k_ssim)
-                    fprintf('Optimum SSIM for SVD: k=%d, SSIM=%.4f\n',optimumSVD_k_ssim,ssimSVD(optimumSVD_k_ssim));
-                end
+            if mod(i,10)==0 || i==1 || i==length(kValues)
+                fprintf('Processed k=%d/%d\n',k,kmax);
             end
         end
-    else
-        k = userk;
-        if k<1||k>kmax, error('k out of range'); end
-        svdRecon = zeros(size(noisy));
-        for c=1:C
-            if C==1 && ndims(noisy)==2
-                chan = double(noisy);
-            else
-                chan = double(noisy(:,:,c));
-            end
-            [U,S,V]=mySVD(chan);
-            r = U(:,1:k)*S(1:k,1:k)*V(:,1:k)';
-            r = min(max(r,0),255);
-            if C==1, svdRecon=r; else, svdRecon(:,:,c)=r; end
-        end
-        svdRecon=uint8(svdRecon);
-        pcaRecon = zeros(size(noisy));
-        for c=1:C
-            if C==1 && ndims(noisy)==2
-                chan = double(noisy);
-            else
-                chan = double(noisy(:,:,c));
-            end
-            m1=mean(chan,1);
-            cent=chan-m1;
-            covM = cov(cent);
-            [E,ev]=eig(covM);
-            [~,idx]=sort(diag(ev),'descend');
-            E=E(:,idx);
-            Ek = E(:,1:min(k,size(E,2)));
-            proj = cent*Ek;
-            r = proj*Ek'+m1;
-            r = min(max(r,0),255);
-            if C==1, pcaRecon=r; else, pcaRecon(:,:,c)=r; end
-        end
-        pcaRecon=uint8(pcaRecon);
 
-        fprintf('k=%d\n',k);
-        fprintf('Noisy: MSE=%.4g\n',mseMetric(clean,noisy));
-        fprintf(' PCA : MSE=%.4g\n',mseMetric(clean,pcaRecon));
-        fprintf(' SVD : MSE=%.4g\n',mseMetric(clean,svdRecon));
-        if strcmp(dtype,'image')
-            fprintf('Noisy: PSNR=%.4g, SSIM=%.4g\n',psnrMetric(clean,noisy),ssimMetric(clean,noisy,isRGB));
-            fprintf(' PCA : PSNR=%.4g, SSIM=%.4g\n',psnrMetric(clean,pcaRecon),ssimMetric(clean,pcaRecon,isRGB));
-            fprintf(' SVD : PSNR=%.4g, SSIM=%.4g\n',psnrMetric(clean,svdRecon),ssimMetric(clean,svdRecon,isRGB));
+        % Find optimum k (first k beating noisy reference)
+        opt_pca = find(mse_pca < ref_mse, 1, 'first');
+        opt_svd = find(mse_svd < ref_mse, 1, 'first');
+        if strcmp(datatype,'image')
+            opt_pca_psnr = find(psnr_pca > ref_psnr, 1, 'first');
+            opt_svd_psnr = find(psnr_svd > ref_psnr, 1, 'first');
+            opt_pca_ssim = find(ssim_pca > ref_ssim, 1, 'first');
+            opt_svd_ssim = find(ssim_svd > ref_ssim, 1, 'first');
+        end
+
+        % ---- Plot MSE ----
+        figure;
+        set(gcf,'Position',[200 200 700 550]);
+        plot(kValues, mse_pca, 'b-', 'LineWidth',2); hold on
+        plot(kValues, mse_svd, 'r-', 'LineWidth',2);
+        yline(ref_mse, 'k--', 'LineWidth', 1.5, 'DisplayName', 'Noisy Reference');
+        if ~isempty(opt_pca), plot(kValues(opt_pca), mse_pca(opt_pca), 'bo', 'MarkerSize',10, 'LineWidth',2, 'DisplayName', 'Optimum PCA'); end
+        if ~isempty(opt_svd), plot(kValues(opt_svd), mse_svd(opt_svd), 'ro', 'MarkerSize',10, 'LineWidth',2, 'DisplayName', 'Optimum SVD'); end
+        hold off
+        legend('PCA','SVD','Noisy','Optimum PCA','Optimum SVD','Location','northeast');
+        xlabel('k (components)');
+        ylabel('MSE (uint8)');
+        title('MSE (uint8) vs k');
+        grid on;
+
+        % ---- Plot computation time ----
+        figure;
+        set(gcf,'Position',[950 200 700 550]);
+        plot(kValues, t_pca, 'b-', 'LineWidth',2); hold on
+        plot(kValues, t_svd, 'r-', 'LineWidth',2);
+        hold off
+        legend('PCA','SVD','Location','northwest');
+        xlabel('k (components)');
+        ylabel('Computation Time (seconds)');
+        title('Computation Time vs k');
+        grid on;
+
+        % ---- Image: plot PSNR/SSIM ----
+        if strcmp(datatype,'image')
+            % PSNR
             figure;
-            if ndims(clean)==2
-                subplot(1,4,1); imagesc(clean); axis image off; title('Original');
+            plot(kValues, psnr_pca, 'b-', 'LineWidth',2); hold on
+            plot(kValues, psnr_svd, 'r-', 'LineWidth',2);
+            yline(ref_psnr, 'k--', 'LineWidth', 1.5, 'DisplayName', 'Noisy Reference');
+            if ~isempty(opt_pca_psnr), plot(kValues(opt_pca_psnr), psnr_pca(opt_pca_psnr), 'bo', 'MarkerSize',10, 'LineWidth',2); end
+            if ~isempty(opt_svd_psnr), plot(kValues(opt_svd_psnr), psnr_svd(opt_svd_psnr), 'ro', 'MarkerSize',10, 'LineWidth',2); end
+            hold off
+            legend('PCA','SVD','Noisy','Optimum PCA','Optimum SVD','Location','southeast');
+            xlabel('k (components)'); ylabel('PSNR (dB)');
+            title('PSNR vs k');
+            grid on;
+            % SSIM
+            figure;
+            plot(kValues, ssim_pca, 'b-', 'LineWidth',2); hold on
+            plot(kValues, ssim_svd, 'r-', 'LineWidth',2);
+            yline(ref_ssim, 'k--', 'LineWidth', 1.5, 'DisplayName', 'Noisy Reference');
+            if ~isempty(opt_pca_ssim), plot(kValues(opt_pca_ssim), ssim_pca(opt_pca_ssim), 'bo', 'MarkerSize',10, 'LineWidth',2); end
+            if ~isempty(opt_svd_ssim), plot(kValues(opt_svd_ssim), ssim_svd(opt_svd_ssim), 'ro', 'MarkerSize',10, 'LineWidth',2); end
+            hold off
+            legend('PCA','SVD','Noisy','Optimum PCA','Optimum SVD','Location','southeast');
+            xlabel('k (components)'); ylabel('SSIM');
+            title('SSIM vs k');
+            grid on;
+        end
+
+        % ---- Print optimum k ----
+        fprintf('\n-------- Optimum k (first k that beats noisy reference) --------\n');
+        fprintf('Metric      |  PCA   |  SVD\n');
+        fprintf('MSE         |  %4d   |  %4d\n', opt_pca, opt_svd);
+        if strcmp(datatype,'image')
+            fprintf('PSNR        |  %4d   |  %4d\n', opt_pca_psnr, opt_svd_psnr);
+            fprintf('SSIM        |  %4d   |  %4d\n', opt_pca_ssim, opt_svd_ssim);
+        end
+        fprintf('---------------------------------------------------------------\n');
+
+    else
+        k = user_k;
+        if k < 1 || k > kmax
+            error('k must be between 1 and %d', kmax);
+        end
+
+        % --- SVD ---
+        svdRecon = zeros(size(noisy));
+        for cc = 1:c
+            if c==1 && ndims(noisy)==2
+                chan = double(noisy);
+            else
+                chan = double(noisy(:,:,cc));
+            end
+            [U,S,V] = customSVD_full(chan);
+            recon = U(:,1:k) * S(1:k,1:k) * V(:,1:k)';
+            recon = max(min(recon,255),0);
+            if c==1
+                svdRecon = recon;
+            else
+                svdRecon(:,:,cc) = recon;
+            end
+        end
+        svdRecon = uint8(svdRecon);
+
+        % --- PCA ---
+        pcaRecon = zeros(size(noisy));
+        for cc = 1:c
+            if c==1 && ndims(noisy)==2
+                chan = double(noisy);
+            else
+                chan = double(noisy(:,:,cc));
+            end
+            meanCols = mean(chan, 1);
+            centered = chan - meanCols;
+            covMatrix = cov(centered);
+            [eigvecs, eigvals] = eig(covMatrix);
+            [eigvals, idx] = sort(diag(eigvals), 'descend');
+            eigvecs = eigvecs(:, idx);
+            V_k = eigvecs(:,1:min(k,size(eigvecs,2)));
+            proj = centered * V_k;
+            recon = proj * V_k' + meanCols;
+            recon = max(min(recon,255),0);
+            if c==1
+                pcaRecon = recon;
+            else
+                pcaRecon(:,:,cc) = recon;
+            end
+        end
+        pcaRecon = uint8(pcaRecon);
+
+        % Metrics
+        fprintf('\nSelected k: %d\n', k);
+        fprintf('Noisy  - MSE: %.4g\n', mseMetric(orig, noisy));
+        fprintf('PCA    - MSE: %.4g\n', mseMetric(orig, pcaRecon));
+        fprintf('SVD    - MSE: %.4g\n', mseMetric(orig, svdRecon));
+        if strcmp(datatype,'image')
+            fprintf('Noisy  - PSNR: %.4g, SSIM: %.4g\n', psnrMetric(orig, noisy), ssimMetric(orig, noisy, isRGB));
+            fprintf('PCA    - PSNR: %.4g, SSIM: %.4g\n', psnrMetric(orig, pcaRecon), ssimMetric(orig, pcaRecon, isRGB));
+            fprintf('SVD    - PSNR: %.4g, SSIM: %.4g\n', psnrMetric(orig, svdRecon), ssimMetric(orig, svdRecon, isRGB));
+        end
+
+        % Display (image only)
+        if strcmp(datatype,'image')
+            figure;
+            if ndims(orig) == 2
+                subplot(1,4,1); imagesc(orig); axis image off; title('Original');
                 subplot(1,4,2); imagesc(noisy); axis image off; title('Noisy');
                 subplot(1,4,3); imagesc(pcaRecon); axis image off; title('PCA');
-                subplot(1,4,4); imagesc(svdRecon); axis image off; title('SVD'); colormap gray;
+                subplot(1,4,4); imagesc(svdRecon); axis image off; title('SVD');
+                colormap gray;
             else
-                subplot(1,4,1); imshow(clean); title('Original');
+                subplot(1,4,1); imshow(orig); title('Original');
                 subplot(1,4,2); imshow(noisy); title('Noisy');
                 subplot(1,4,3); imshow(pcaRecon); title('PCA');
                 subplot(1,4,4); imshow(svdRecon); title('SVD');
@@ -488,81 +390,70 @@ function runDenoiseCurves(noisy, clean, kmax, isRGB, userk, dtype)
     end
 end
 
-function recon = getRecon(Uc,Sc,Vc,Mc,Ec,noisy,C,k,mode)
-    if strcmp(mode,'svd')
-        if C==1
-            recon = Uc{1}(:,1:k)*Sc{1}(1:k,1:k)*Vc{1}(:,1:k)';
-            recon = min(max(recon,0),255);
-            recon = uint8(recon);
-        else
-            recon = zeros(size(noisy),'double');
-            for c=1:C
-                r = Uc{c}(:,1:k)*Sc{c}(1:k,1:k)*Vc{c}(:,1:k)';
-                r = min(max(r,0),255);
-                recon(:,:,c)=r;
-            end
-            recon=uint8(recon);
-        end
-    else
-        if C==1
-            Ek = Ec{1}(:,1:min(k,size(Ec{1},2)));
-            proj = (double(noisy)-Mc{1})*Ek;
-            recon = proj*Ek'+Mc{1};
-            recon = min(max(recon,0),255);
-            recon = uint8(recon);
-        else
-            recon = zeros(size(noisy),'double');
-            for c=1:C
-                Ek = Ec{c}(:,1:min(k,size(Ec{c},2)));
-                proj = (double(noisy(:,:,c))-Mc{c})*Ek;
-                r = proj*Ek'+Mc{c};
-                r = min(max(r,0),255);
-                recon(:,:,c)=r;
-            end
-            recon=uint8(recon);
-        end
-    end
-end
-
-function [U,S,V]=mySVD(A)
-    [m,n]=size(A);
-    if m>=n
-        [V,D]=eig(A'*A);
-        [d,idx]=sort(diag(D),'descend');
-        V=V(:,idx); d(d<0)=0; s=sqrt(d);
-        U=zeros(m,length(s));
-        for i=1:length(s)
-            if s(i)>1e-12
-                U(:,i) = (1/s(i))*A*V(:,i);
+% --- Efficient SVD (full, ONCE) ---
+function [U, S, V] = customSVD_full(channel)
+    [m, n] = size(channel);
+    if m >= n
+        A = channel' * channel; 
+        [V, D] = eig(A);
+        [d, idx] = sort(diag(D), 'descend');
+        V = V(:, idx);
+        d(d < 0) = 0; % Numerical fix
+        singularValues = sqrt(d);
+        U = zeros(m, length(singularValues));
+        for i = 1:length(singularValues)
+            if singularValues(i) > 1e-12
+                U(:,i) = (1/singularValues(i)) * channel * V(:,i);
             else
-                U(:,i)=zeros(m,1);
+                U(:,i) = zeros(m,1);
             end
         end
-        S=diag(s);
+        S = diag(singularValues);
     else
-        [U,D]=eig(A*A');
-        [d,idx]=sort(diag(D),'descend');
-        U=U(:,idx); d(d<0)=0; s=sqrt(d);
-        V=zeros(n,length(s));
-        for i=1:length(s)
-            if s(i)>1e-12
-                V(:,i) = (1/s(i))*A'*U(:,i);
+        A = channel * channel';
+        [U, D] = eig(A);
+        [d, idx] = sort(diag(D), 'descend');
+        U = U(:, idx);
+        d(d < 0) = 0;
+        singularValues = sqrt(d);
+        V = zeros(n, length(singularValues));
+        for i = 1:length(singularValues)
+            if singularValues(i) > 1e-12
+                V(:,i) = (1/singularValues(i)) * channel' * U(:,i);
             else
-                V(:,i)=zeros(n,1);
+                V(:,i) = zeros(n,1);
             end
         end
-        S=diag(s);
+        S = diag(singularValues);
     end
+    % Truncate U/S/V to min(m,n) if needed
     minmn = min(m,n);
-    U=U(:,1:minmn); S=S(1:minmn,1:minmn); V=V(:,1:minmn);
+    U = U(:,1:minmn); S = S(1:minmn,1:minmn); V = V(:,1:minmn);
 end
 
-function v=mseMetric(A,B), v=mean((double(A(:))-double(B(:))).^2); end
-function v=psnrMetric(A,B), m=mseMetric(A,B); v=99*(m==0)+10*log10(255^2/m)*(m~=0); end
-function v=ssimMetric(A,B,isRGB)
+% --- Metrics ---
+function val = mseMetric(A, B)
+    A = double(A); B = double(B);
+    val = mean((A(:) - B(:)).^2);
+end
+
+function val = psnrMetric(A, B)
+    mse = mseMetric(A, B);
+    if mse == 0
+        val = 99;
+    else
+        val = 10*log10(255^2/mse);
+    end
+end
+
+function val = ssimMetric(A, B, isRGB)
     try
-        v = ssim(uint8(B),uint8(A));
+        if isRGB
+            val = ssim(uint8(B), uint8(A));
+        else
+            val = ssim(uint8(B), uint8(A));
+        end
     catch
-        v = 1-mseMetric(A,B)/mean([var(double(A(:))),var(double(B(:)))]);
+        val = 1 - mseMetric(A,B)/mean([var(double(A(:))), var(double(B(:)))]);
     end
 end
